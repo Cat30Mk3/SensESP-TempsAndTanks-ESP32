@@ -1,0 +1,20 @@
+
+#pragma once
+
+
+
+// #ifndef __SRC_EH_ANALOG_H__
+// #define __SRC_EH_ANALOG_H__
+
+#include "jwStructsAndGlobals.h"
+
+#include <Adafruit_ADS1X15.h>
+
+#include "sensesp/sensors/sensor.h"
+
+using namespace sensesp;
+
+
+FloatProducer* ConnectTankSender(Adafruit_ADS1115* ads1115, int channel, String name, double M, double B);
+
+// #endif

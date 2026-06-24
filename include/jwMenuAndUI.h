@@ -1,0 +1,982 @@
+
+#pragma once
+#include <Arduino.h>
+#include <ESP32RotaryEncoder.h>
+
+#include <U8g2lib.h>
+#include <MUIU8g2.h>
+
+#include "jwDebug.h"
+#include "jwLiveDispays.h"
+#include "jwStructsAndGlobals.h"
+
+// **** S W I T C H   D I S P L A Y  R O U T I N E S ****
+
+int isNthBitSet(unsigned char c, int n) {
+  // static unsigned char mask[] = {128, 64, 32, 16, 8, 4, 2, 1};
+  static unsigned char mask[] = {1, 2, 4, 8, 16, 32, 64, 128};
+  return ((c & mask[n]) != 0);
+}
+
+uint8_t setNthBit(unsigned char c, int n, int value) {
+  // static unsigned char mask[] = {128, 64, 32, 16, 8, 4, 2, 1};
+  static unsigned char mask[] = {1, 2, 4, 8, 16, 32, 64, 128};
+  if (value == 0) {  // set nth bit to 0
+    c &= ~(1 << n);
+  } else  // set nth bit to 1
+  {
+    c |= 1 << n;
+  }
+  // DEBUG_PRINTF("^^setNthBit c: 0x%X",c);
+  return uint8_t(c);
+}
+
+void switchDisplay(void) {
+  // saves global "startupDisplayAddress" to config file then restarts
+  // assumes setup reads config file before setting u8g2 address & begin
+  // value of remoteNotLocal is set by menu radio button in Form 10
+  if (remoteNotLocal)
+    startupDisplayAddress = DISPLAY_REMOTE_I2C_ADDRESS;
+  else
+    startupDisplayAddress = DISPLAY_LOCAL_I2C_ADDRESS;
+  writeConfigFile();
+  DEBUG_PRINTF(
+      "\n** W A R N IN G   S W I T C H I N G  T O  %s  D I S P L A Y **\n\n",
+      remoteNotLocal ? "R E M O T E" : "L O C A L");
+  u8g2.clearBuffer();  // clear screen
+  u8g2.sendBuffer();   // clear screen
+  delay(1000);
+  ESP.restart();
+}
+
+// **** R O T A R Y   E N C O D E R  R O U T I N E S ****
+
+void knobCallback(long value) {
+  // bool currentState = digitalRead(TEST_LED_PIN);
+  // digitalWrite(TEST_LED_PIN, !currentState);
+
+  // See the note in the `loop()` function for
+  // an explanation as to why we're setting
+  // boolean values here instead of running
+  // functions directly.
+
+  // Don't do anything if either flag is set;
+  // it means we haven't taken action yet
+  if (turnedRightFlag || turnedLeftFlag) return;
+
+  // Set a flag that we can look for in `loop()`
+  // so that we know we have something to do
+  switch (value) {
+    case 1:
+      turnedRightFlag = true;
+      turnedLeftFlag = false;
+      break;
+
+    case -1:
+      turnedLeftFlag = true;
+      turnedRightFlag = false;
+      break;
+  }
+
+  // Override the tracked value back to 0 so that
+  // we can continue tracking right/left events
+  //rotaryEncoder.setEncoderValue(0);
+  rotaryEncoderSelected[selectedEncoder].setEncoderValue(0);
+
+}
+
+void buttonCallback(unsigned long duration) {
+  // bool currentState = digitalRead(TEST_LED_PIN);
+  // digitalWrite(TEST_LED_PIN, !currentState);
+  push_event = true;
+}
+
+// **** M E N U   R O U T I N E S ****
+uint8_t mui_hrule(mui_t *ui, uint8_t msg) {
+  u8g2_t *u8g2 = mui_get_U8g2(ui);
+  switch (msg) {
+    case MUIF_MSG_DRAW:
+      u8g2_DrawHLine(u8g2, 0, mui_get_y(ui), u8g2_GetDisplayWidth(u8g2));
+      break;
+  }
+  return 0;
+}
+
+bool displayQty[8];
+bool sensorEnable, sensorN2kEnable;
+
+void saveTankConfig(void) {
+  DEBUG_PRINTF(">>Saving tankParam[selectedTank] config\n");
+  tankParam[selectedTank].enabled = sensorEnable;
+  tankParam[selectedTank].n2kEnabled = sensorN2kEnable;
+  for (int posn = 0; posn < 8; posn++) {
+    // displayQty[i]=isNthBitSet(tankParam[selectedTank].displayEnabled, i);
+    tankParam[selectedTank].displayEnabled = setNthBit(
+        tankParam[selectedTank].displayEnabled, posn, displayQty[posn]);
+    DEBUG_PRINTF(">>displayQty[%d] %d displayEnabled: 0x%X\n", posn,
+                 displayQty[posn], tankParam[selectedTank].displayEnabled);
+  }
+  DEBUG_PRINTF(">>selectedTank %d, displayEnabled: 0x%X\n", selectedTank,
+               tankParam[selectedTank].displayEnabled);
+  DEBUG_PRINTF(">>selectedTank %d, enabled: %d\n", selectedTank,
+               tankParam[selectedTank].enabled);
+  DEBUG_PRINTF(">>selectedTank %d, n2kEnabled: %d\n", selectedTank,
+               tankParam[selectedTank].n2kEnabled);
+  writeConfigFile();
+}
+
+void saveTempConfig(void) {
+  DEBUG_PRINTF(">>Saving tempParam[selectedTemp] config\n");
+  tempParam[selectedTemp].enabled = sensorEnable;
+  tempParam[selectedTemp].n2kEnabled = sensorN2kEnable;
+  for (int posn = 0; posn < 8; posn++) {
+    // displayQty[i]=isNthBitSet(tankParam[selectedTank].displayEnabled, i);
+    tempParam[selectedTemp].displayEnabled = setNthBit(
+        tempParam[selectedTemp].displayEnabled, posn, displayQty[posn]);
+    DEBUG_PRINTF(">>displayQty[%d] %d displayEnabled: 0x%X\n", posn,
+                 displayQty[posn], tempParam[selectedTemp].displayEnabled);
+  }
+  DEBUG_PRINTF(">>selectedTemp %d, displayEnabled: 0x%X\n", selectedTemp,
+               tempParam[selectedTemp].displayEnabled);
+  DEBUG_PRINTF(">>selectedTank %d, enabled: %d\n", selectedTemp,
+               tempParam[selectedTemp].enabled);
+  DEBUG_PRINTF(">>selectedTank %d, n2kEnabled: %d\n", selectedTemp,
+               tempParam[selectedTemp].n2kEnabled);
+  writeConfigFile();
+}
+
+void saveTachConfig(void) {
+  DEBUG_PRINTF(">>Saving tachParam[selectedTemp] config\n");
+  tachParam[selectedTach].enabled = sensorEnable;
+  tachParam[selectedTach].n2kEnabled = sensorN2kEnable;
+  for (int posn = 0; posn < 8; posn++) {
+    // displayQty[i]=isNthBitSet(tankParam[selectedTank].displayEnabled, i);
+    tachParam[selectedTach].displayEnabled = setNthBit(
+        tachParam[selectedTach].displayEnabled, posn, displayQty[posn]);
+    DEBUG_PRINTF(">>displayQty[%d] %d displayEnabled: 0x%X\n", posn,
+                 displayQty[posn], tachParam[selectedTach].displayEnabled);
+  }
+  DEBUG_PRINTF(">>selectedTach %d, displayEnabled: 0x%X\n", selectedTach,
+               tachParam[selectedTach].displayEnabled);
+  DEBUG_PRINTF(">>selectedTank %d, enabled: %d\n", selectedTach,
+               tachParam[selectedTach].enabled);
+  DEBUG_PRINTF(">>selectedTank %d, n2kEnabled: %d\n", selectedTach,
+               tachParam[selectedTach].n2kEnabled);
+  writeConfigFile();
+}
+
+void exitMenu(void) {
+  // mui.
+}
+
+void loadTankConfig(void) {
+  DEBUG_PRINTF(">>loading tankParam[selectedTank].displayEnabled\n");
+  sensorEnable = tankParam[selectedTank].displayEnabled;
+  sensorN2kEnable = tankParam[selectedTank].n2kEnabled;
+  for (int posn = 0; posn < 8; posn++) {
+    displayQty[posn] =
+        isNthBitSet(tankParam[selectedTank].displayEnabled, posn);
+    DEBUG_PRINTF(">>displayQty[%d] %d\n", posn, displayQty[posn]);
+  }
+  DEBUG_PRINTF(">>selectedTank %d, displayEnabled: %d\n", selectedTank,
+               tankParam[selectedTank].displayEnabled);
+  DEBUG_PRINTF(">>selectedTank %d, enabled: %d\n", selectedTank,
+               tankParam[selectedTank].enabled);
+  DEBUG_PRINTF(">>selectedTank %d, n2kEnabled: %d\n", selectedTank,
+               tankParam[selectedTank].n2kEnabled);
+}
+
+void loadTempConfig(void) {
+  DEBUG_PRINTF(">>loading tempParam[selectedTemp].displayEnabled\n");
+  sensorEnable = tempParam[selectedTemp].displayEnabled;
+  sensorN2kEnable = tempParam[selectedTemp].n2kEnabled;
+  for (int posn = 0; posn < 8; posn++) {
+    displayQty[posn] =
+        isNthBitSet(tempParam[selectedTemp].displayEnabled, posn);
+    DEBUG_PRINTF(">>displayQty[%d] %d\n", posn, displayQty[posn]);
+  }
+  DEBUG_PRINTF(">>selectedTemp %d, displayEnabled: %d\n", selectedTemp,
+               tempParam[selectedTemp].displayEnabled);
+  DEBUG_PRINTF(">>selectedTemp %d, enabled: %d\n", selectedTemp,
+               tempParam[selectedTemp].enabled);
+  DEBUG_PRINTF(">>selectedTemp %d, n2kEnabled: %d\n", selectedTemp,
+               tempParam[selectedTemp].n2kEnabled);
+}
+
+void loadTachConfig(void) {
+  DEBUG_PRINTF(">>loading tachParam[selectedTach].displayEnabled\n");
+  sensorEnable = tachParam[selectedTach].displayEnabled;
+  sensorN2kEnable = tachParam[selectedTach].n2kEnabled;
+  for (int posn = 0; posn < 8; posn++) {
+    displayQty[posn] =
+        isNthBitSet(tachParam[selectedTach].displayEnabled, posn);
+    DEBUG_PRINTF(">>displayQty[%d] %d\n", posn, displayQty[posn]);
+  }
+  DEBUG_PRINTF(">>selectedTemp %d, displayEnabled: %d\n", selectedTach,
+               tachParam[selectedTach].displayEnabled);
+  DEBUG_PRINTF(">>selectedTemp %d, enabled: %d\n", selectedTach,
+               tachParam[selectedTach].enabled);
+  DEBUG_PRINTF(">>selectedTemp %d, n2kEnabled: %d\n", selectedTach,
+               tachParam[selectedTach].n2kEnabled);
+}
+
+uint8_t mui_draw_calParams(mui_t *ui, uint8_t msg) {
+  uint8_t xPos =
+      mui_get_x(ui);  // collects the position provided by fds MUI_XY("S1",0,35)
+  uint8_t yPos = mui_get_y(ui);
+  DEBUG_PRINTF("\n\n ### calParams msg: %d ###\n\n", msg);
+  if (msg == MUIF_MSG_DRAW) {
+    if (selectedPair == 0)  // 0 == Lower, 1 == Upper
+      sprintf(curMvOhms_str, "CUR V: %-05.3f Ohm: %-0004.1f",
+              tankParam[selectedTank].calLowerVolts,
+              tankParam[selectedTank].calLowerResistance);
+    else
+      sprintf(curMvOhms_str, "CUR V: %-05.3f Ohm: %-0004.1f",
+              tankParam[selectedTank].calUpperVolts,
+              tankParam[selectedTank].calUpperResistance);
+    u8g2.setCursor(xPos, yPos);
+    u8g2.print(curMvOhms_str);
+
+    sprintf(newMv_str,
+            "NEW V: %-05.3f Ohm:", tankParam[selectedTank].voltsMeasured);
+    u8g2.setCursor(xPos, yPos + 10);
+    u8g2.print(newMv_str);
+  }
+  return 0;
+}
+
+uint8_t mui_draw_tankConfigParams(mui_t *ui, uint8_t msg) {
+  static bool selectedTankChanged = false;
+  static int lastSelectedTank = 0;
+  DEBUG_PRINTF("\n\n ### calParams msg: %d ###\n\n", msg);
+  if (msg == MUIF_MSG_DRAW) {
+    uint8_t xPos = mui_get_x(
+        ui);  // collects the position provided by fds MUI_XY("??",0,35)
+    uint8_t yPos = mui_get_y(ui);
+    u8g2.setCursor(xPos, yPos);
+    u8g2.print(tankParam[selectedTank].tankName);
+    if (selectedTank != lastSelectedTank) {
+      loadTankConfig();
+      lastSelectedTank = selectedTank;
+    }
+  }
+  if (msg == MUIF_MSG_FORM_START) {
+    DEBUG_PRINTF(">>> Form load - tank config\n");
+    selectedTank = 0;  // always start with tank 0
+    loadTankConfig();
+  }
+  return 0;
+}
+uint8_t mui_draw_tempConfigParams(mui_t *ui, uint8_t msg) {
+  static bool selectedTempChanged = false;
+  static int lastSelectedTemp = 0;
+  DEBUG_PRINTF("\n\n ### tempConfigParams msg: %d ###\n\n", msg);
+  if (msg == MUIF_MSG_DRAW) {
+    uint8_t xPos = mui_get_x(
+        ui);  // collects the position provided by fds MUI_XY("??",0,35)
+    uint8_t yPos = mui_get_y(ui);
+    u8g2.setCursor(xPos, yPos);
+    u8g2.print(tempParam[selectedTemp].tempName);
+    if (selectedTemp != lastSelectedTemp) {
+      loadTempConfig();
+      lastSelectedTemp = selectedTemp;
+    }
+  }
+  if (msg == MUIF_MSG_FORM_START) {
+    DEBUG_PRINTF(">>> Form load - temp config\n");
+    selectedTemp = 0;  // always start with temp 0
+    loadTempConfig();
+  }
+  return 0;
+}
+
+uint8_t mui_draw_tachConfigParams(mui_t *ui, uint8_t msg) {
+  static bool selectedTachChanged = false;
+  static int lastSelectedTach = 0;
+  DEBUG_PRINTF("\n\n ### tachConfigParams msg: %d ###\n\n", msg);
+  if (msg == MUIF_MSG_DRAW) {
+    uint8_t xPos = mui_get_x(
+        ui);  // collects the position provided by fds MUI_XY("??",0,35)
+    uint8_t yPos = mui_get_y(ui);
+    u8g2.setCursor(xPos, yPos);
+    u8g2.print(tachParam[selectedTach].tachName);
+    if (selectedTach != lastSelectedTach) {
+      loadTachConfig();
+      lastSelectedTach = selectedTach;
+    }
+  }
+  if (msg == MUIF_MSG_FORM_START) {
+    DEBUG_PRINTF(">>> Form load - tach config\n");
+    selectedTach = 0;  // always start with tach 0
+    loadTachConfig();
+  }
+  return 0;
+}
+
+uint8_t mui_draw_about(mui_t *ui, uint8_t msg) {
+  char about_str[ABOUT_LIST_COUNT][30+1];
+  char filename[30+1];
+ 
+
+  sprintf(about_str[0], "ver:%s", PROGRAM_VERSION);  //defined in jwStructsAndGlobals.h
+  //sprintf(about_str[0], "file:%s", main_filename);
+  sprintf(about_str[1], "Date:%s", __DATE__);
+  sprintf(about_str[2], "Time:%s", __TIME__);
+
+
+  uint8_t xPos =
+      mui_get_x(ui);  // collects the position provided by fds MUI_XY("S1",0,35)
+  uint8_t yPos = mui_get_y(ui);
+  if (msg == MUIF_MSG_DRAW) {
+    u8g2.setCursor(xPos, yPos);
+    u8g2.print(about_str[0]);
+    u8g2.setCursor(xPos, yPos + 10);
+    u8g2.print(about_str[1]);
+    u8g2.setCursor(xPos, yPos + 20);
+    u8g2.print(about_str[2]);
+  }
+  return 0;
+}
+
+uint8_t mui_draw_wifiParams(mui_t *ui, uint8_t msg) {
+  // typedef enum {
+  //     WL_NO_SHIELD        = 255,   // for compatibility with WiFi Shield
+  //     library WL_IDLE_STATUS      = 0, WL_NO_SSID_AVAIL    = 1,
+  //     WL_SCAN_COMPLETED   = 2,
+  //     WL_CONNECTED        = 3,
+  //     WL_CONNECT_FAILED   = 4,
+  //     WL_CONNECTION_LOST  = 5,
+  //     WL_DISCONNECTED     = 6
+  // } wl_status_t;
+  const char wifiStatus_str[8][10] = {{"IDLE"},   {"NO_SSID"},   {"SCAN DONE"},
+                                      {"CONN"},   {"FAIL_CONN"}, {"LOST_CONN"},
+                                      {"DISCON"}, {"NO_SHLD"}};
+  const char wifiMode_str[5][6] = {
+      {"NULL"}, {"STA"}, {"AP"}, {"APSTA"}, {"MAX"}};
+  char wifiParam_str[WIFI_SCROLLER_LIST_COUNT][30];
+  sprintf(wifiParam_str[0], "0.status:%d-%s", WiFi.status(),
+          wifiStatus_str[WiFi.status() != 255 ? WiFi.status() : 7]);
+  sprintf(wifiParam_str[1], "1.mode:%d-%s", WiFi.getMode(),
+          wifiMode_str[WiFi.getMode()]);  // wifi_mode_t is enumerated value --
+                                          // see above
+  sprintf(wifiParam_str[2], "2.mac: %s", WiFi.macAddress().c_str());
+  sprintf(wifiParam_str[3], "3.AP IP: %s", WiFi.softAPIP().toString().c_str());
+  sprintf(wifiParam_str[4], "4.AP SSID: %s", WiFi.softAPSSID().c_str());
+  sprintf(wifiParam_str[5], "5.AP PSK: %s", "thisisfine");
+  sprintf(wifiParam_str[6], "6.IP: %s", WiFi.localIP().toString().c_str());
+  sprintf(wifiParam_str[7], "7.SSID: %s", WiFi.SSID().c_str());
+  sprintf(wifiParam_str[8], "8.PSK: %s", WiFi.psk().c_str());
+  sprintf(wifiParam_str[9], "9.RSSI: %d", WiFi.RSSI());
+
+  // remember to update global macro #define WIFI_SCROLLER_LIST_COUNT 10
+
+  uint8_t xPos =
+      mui_get_x(ui);  // collects the position provided by fds MUI_XY("S1",0,35)
+  uint8_t yPos = mui_get_y(ui);
+  if (msg == MUIF_MSG_DRAW) {
+    u8g2.setCursor(xPos, yPos);
+    u8g2.print(wifiParam_str[WiFiScrollerIndex]);
+    u8g2.setCursor(xPos, yPos + 10);
+    u8g2.print(wifiParam_str[WiFiScrollerIndex + 1]);
+    u8g2.setCursor(xPos, yPos + 20);
+    u8g2.print(wifiParam_str[WiFiScrollerIndex + 2]);
+  }
+  return 0;
+}
+
+void refreshcurVoltReading(void) {
+  if (selectedPair == 0) {  // 0 == Lower, 1 == Upper
+    newOhms = tankParam[selectedTank].calLowerResistance;
+    newOhmsdec =
+        (tankParam[selectedTank].calLowerResistance - (float)newOhms) * 10;
+  } else {
+    newOhms = tankParam[selectedTank].calUpperResistance;
+    newOhmsdec =
+        (tankParam[selectedTank].calUpperResistance - (float)newOhms) * 10;
+  }
+
+  sprintf(newMv_str,
+          "NEW V: %-05.3f Ohm:", tankParam[selectedTank].voltsMeasured);
+  u8g2.setCursor(0, 35 + 10);
+  u8g2.print(newMv_str);
+  return;
+}
+
+void updateCalibration(void) {
+  DEBUG_PRINTF(">>> VOLTS->OHMS CALIBRATION Form load - updateCalibration()\n");
+  if (selectedPair == 0) {  // 0 == Lower, 1 == Upper
+    tankParam[selectedTank].calLowerVolts =
+        tankParam[selectedTank].voltsMeasured;
+    tankParam[selectedTank].calLowerResistance =
+        (float)newOhms + ((float)newOhmsdec / 10.0);
+  } else {
+    tankParam[selectedTank].calUpperVolts =
+        tankParam[selectedTank].voltsMeasured;
+    tankParam[selectedTank].calUpperResistance =
+        (float)newOhms + ((float)newOhmsdec / 10.0);
+  }
+  updateVolts2OhmsParameters();  // recalculate M&B parameters based on upper
+                                 // and lower pairs used in livecalcs
+  writeConfigFile();
+
+  return;
+}
+
+void deleteConfigFile(void) {
+  switch (selectFile2Delete) {
+    case 1:
+      runListDir(/* delWMconfig */ true, /* deleteAllButJson */ false,
+                 /* delJson */ false);
+      break;
+    case 2:
+      runListDir(/* delWMconfig */ false, /* deleteAllButJson */ true,
+                 /* delJson */ false);
+      break;
+    case 3:
+      runListDir(/* delWMconfig */ false, /* deleteAllButJson */ false,
+                 /* delJson */ true);
+      break;
+    default:
+      runListDir(/* delWMconfig */ false, /* deleteAllButJson */ false,
+                 /* delJson */ false);
+      return;
+      break;
+  };
+  DEBUG_PRINTF("\n** W A R N IN G   R E S T A R T  **\n\n");
+  u8g2.clearBuffer();  // clear screen
+  u8g2.sendBuffer();   // clear screen
+  delay(1000);
+  ESP.restart();
+}
+
+fds_t fds_data[] =                /* Don't use comma between the commands! */
+    MUI_FORM(1)                   /* This will start the definition of form 1 */
+    MUI_STYLE(0)                  /* select the font defined with style 0 */
+    MUI_LABEL(5, 10, "Main Menu") /* place text at postion x=5, y=15 */
+    MUI_XY("HR", 0, 13)           /**/
+    MUI_DATA("GP",                /**/
+             MUI_2 "Exit Main Menu|"    /**/
+             MUI_10 "Remote Select|"    /**/
+             MUI_15 "Calibrate V->Ohm|" /**/
+             MUI_30 "WiFi|"             /**/
+             MUI_48 "Sleep Config|"     /**/
+             MUI_50 "Tank Config|"      /**/
+             MUI_51 "Temp Config|"      /**/
+             MUI_52 "Tach Config|"      /**/
+             MUI_40 "Config File Mgmt|" /**/
+             MUI_60 "About|"            /**/
+             ) MUI_XYA("GC", 5, 25, 0)  /**/
+    MUI_XYA("GC", 5, 37, 1)             /**/
+    MUI_XYA("GC", 5, 49, 2)             /**/
+    MUI_XYA("GC", 5, 61, 3)             /**/
+
+    MUI_FORM(2)                        /**/
+    MUI_STYLE(0)                       /**/
+    MUI_LABEL(5, 10, "Exit Main Menu") /**/
+    MUI_XY("HR", 0, 13)                /**/
+    MUI_XYT("LV", 64, 30, " Exit ")    /**/
+    MUI_XYAT("JM", 60, 59, 1, "Back")  /**/
+
+    MUI_FORM(10)                          /**/
+    MUI_STYLE(0)                          /**/
+    MUI_LABEL(5, 10, "Remote Select")     /**/
+    MUI_XY("HR", 0, 13)                   /**/
+    MUI_XYAT("RB", 50, 30, 1, "REMOTE")   /**/
+    MUI_XYAT("RB", 50, 45, 0, "LOCAL")    /**/
+    MUI_XYAT("JM", 20, 59, 10, "Execute") /**/
+    MUI_XYAT("JM", 80, 59, 1, "Back")     /**/
+
+    MUI_FORM(15)                              /**/
+    MUI_STYLE(0)                              /**/
+    MUI_LABEL(5, 10, "Calibrate V->Ohm")      /**/
+    MUI_XY("HR", 0, 13)                       /**/
+    MUI_LABEL(0, 25, "Tank:")                 /**/
+    MUI_XY("NT", 30, 25)                      /**/
+    MUI_LABEL(60, 25, "Pair:")                /**/
+    MUI_XYAT("PR", 90, 25, 30, "Lower|Upper") /**/
+    MUI_XY("T1", 0, 35)                       /**/
+    MUI_XY("N1", 98, 45)                      /**/
+    MUI_LABEL(116, 45, ".")                   /**/
+    MUI_XY("N2", 120, 45)                     /**/
+    MUI_XYAT("JM", 20, 59, 15, "Refresh")     /**/
+    MUI_XYAT("JM", 60, 59, 15, "Set")         /**/
+    MUI_XYAT("JM", 100, 59, 1, "Back")        /**/
+
+    MUI_FORM(20)                      /**/
+    MUI_STYLE(0)                      /**/
+    MUI_LABEL(5, 10, "LED Control")   /**/
+    MUI_XY("HR", 0, 13)               /**/
+    MUI_XYT("Ct", 50, 30, "TEST LED") /**/
+    MUI_XYAT("JM", 60, 59, 1, "Back") /**/
+
+    MUI_FORM(30)                      /**/
+    MUI_STYLE(0)                      /**/
+    MUI_LABEL(5, 10, "WiFi")          /**/
+    MUI_XY("HR", 0, 13)               /**/
+    MUI_XY("T2", 0, 25)               /**/
+    MUI_XYAT("JM", 60, 59, 1, "Back") /**/
+
+    MUI_FORM(40) /* This will start the definition of form 1 */
+    MUI_STYLE(0) /* select the font defined with style 0 */
+    MUI_LABEL(5, 10, "Config File Mgmt")   /* place text at postion x=5, y=15 */
+    MUI_XY("HR", 0, 13)                    /**/
+    MUI_DATA("GP",                         /**/
+             MUI_41 "Load jwconfig.json |" /**/
+             MUI_41 "Load factory config|" /**/
+             MUI_41 "Save jwconfig.json|"  /**/
+             MUI_44 "Delete Config File|"  /**/
+             MUI_1 "Back")                 /**/
+    MUI_XYA("GC", 5, 25, 0)                /**/
+    MUI_XYA("GC", 5, 37, 1)                /**/
+    MUI_XYA("GC", 5, 49, 2)                /**/
+    MUI_XYA("GC", 5, 61, 3)                /**/
+
+    MUI_FORM(41)                                  /**/
+    MUI_STYLE(0)                                  /**/
+    MUI_LABEL(5, 10, "Load jwconfig.json")        /**/
+    MUI_XY("HR", 0, 13)                           /**/
+    MUI_XYAT("R1", 1, 25, 1, "Cancel Load json")  /**/
+    MUI_XYAT("R1", 1, 37, 2, "Confirm Load json") /**/
+    MUI_XYAT("JM", 20, 59, 32, "Execute")         /**/
+    MUI_XYAT("JM", 80, 59, 1, "Back")             /**/
+
+    MUI_FORM(44)                                  /**/
+    MUI_STYLE(0)                                  /**/
+    MUI_LABEL(5, 10, "Delete Config File")        /**/
+    MUI_XY("HR", 0, 13)                           /**/
+    MUI_XYAT("R1", 1, 25, 1, "del WM confg")      /**/
+    MUI_XYAT("R1", 1, 37, 2, "del all but json")  /**/
+    MUI_XYAT("R1", 1, 49, 3, "del jwconfig.json") /**/
+    MUI_XYAT("JM", 20, 59, 32, "Execute")         /**/
+    MUI_XYAT("JM", 80, 59, 1, "Back")             /**/
+
+    MUI_FORM(48)                        /**/
+    MUI_STYLE(0)                        /**/
+    MUI_LABEL(5, 10, "Configure Sleep") /**/
+    MUI_XY("HR", 0, 13)                 /**/
+    MUI_LABEL(0, 35, "delay minutes:")  /**/
+    MUI_XY("NS", 70, 35)                /* this positions selectedTank index*/
+    MUI_XYAT("JM", 60, 60, 48, "Set")   /**/
+    MUI_XYAT("JM", 100, 60, 1, "Back")  /**/
+
+    MUI_FORM(50)                        /**/
+    MUI_STYLE(0)                        /**/
+    MUI_LABEL(5, 10, "Configure Tanks") /**/
+    MUI_XY("HR", 0, 13)                 /**/
+    MUI_LABEL(0, 25, "Tank:")           /**/
+    MUI_XY("NT", 30, 25)                /* this positions selectedTank index*/
+    MUI_XY(
+        "N0", 60,
+        25) /* this triggers MUIF R0 callback providing position for .tankName*/
+    MUI_XYT("C0", 0, 37, "Enb")  /* these are checkboxes for config booleans*/
+    MUI_XYT("C1", 0, 49, "N2k")  /**/
+    MUI_XYT("C2", 32, 37, "Pct") /**/
+    MUI_XYT("C3", 32, 49, "Ltr") /**/
+    MUI_XYT("C4", 64, 37, "Stp") /**/
+    MUI_XYT("C5", 64, 49, "Ohm") /**/
+    MUI_XYT("C6", 96, 37, "Vlt") /**/
+
+    MUI_XYAT("JM", 20, 60, 50, "Refresh") /**/
+    MUI_XYAT("JM", 60, 60, 50, "Set")     /**/
+    MUI_XYAT("JM", 100, 60, 1, "Back")    /**/
+
+    MUI_FORM(51)                        /**/
+    MUI_STYLE(0)                        /**/
+    MUI_LABEL(5, 10, "Configure Temps") /**/
+    MUI_XY("HR", 0, 13)                 /**/
+    MUI_LABEL(0, 25, "Temp:")           /**/
+    MUI_XY("NP", 30, 25)                /**/
+    MUI_XY(
+        "M0", 60,
+        25) /* this triggers MUIF R0 callback providing position for .tempName*/
+    MUI_XYT("C0", 0, 37, "Enb")  /* these are checkboxes for config booleans*/
+    MUI_XYT("C1", 0, 49, "N2k")  /**/
+    MUI_XYT("C2", 32, 37, "DgC") /**/
+    MUI_XYAT("JM", 20, 60, 51, "Refresh") /**/
+    MUI_XYAT("JM", 60, 60, 51, "Set")     /**/
+    MUI_XYAT("JM", 100, 60, 1, "Back")    /**/
+
+    MUI_FORM(52)                       /**/
+    MUI_STYLE(0)                       /**/
+    MUI_LABEL(5, 10, "Configure Tach") /**/
+    MUI_XY("HR", 0, 13)                /**/
+    MUI_LABEL(0, 25, "Tach:")          /**/
+    MUI_XY("NH", 30, 25) /**/          // fixed
+    MUI_XY(
+        "M1", 60,
+        25) /* this triggers MUIF R0 callback providing position for .tachName*/  // fix
+    MUI_XYT("C0", 0, 37,
+            "Enb") /* these are checkboxes for config booleans*/  // fix
+    MUI_XYT("C1", 0, 49, "N2k") /**/                              // fix
+    MUI_XYT("C8", 32, 37, "RPM") /**/                             // fix
+    MUI_XYT("C9", 32, 49, "MS") /**/                              // fix
+    MUI_XYAT("JM", 20, 60, 52, "Refresh")                         /**/
+    MUI_XYAT("JM", 60, 60, 52, "Set")                             /**/
+    MUI_XYAT("JM", 100, 60, 1, "Back")                            /**/
+
+    MUI_FORM(60)                      /**/
+    MUI_STYLE(0)                      /**/
+    MUI_LABEL(5, 10, "About")         /**/
+    MUI_XY("HR", 0, 13)               /**/
+    MUI_XY("T3", 0, 25)               /**/
+    MUI_XYAT("JM", 60, 59, 1, "Back") /**/
+    ;
+
+const char *get_tankName_str(void *data, uint16_t index) {
+  return tankParam[index].tankName;
+}
+
+muif_t muif_list[] = {
+    /* Form(0) Main Menu and common functions*/
+    MUIF_RO("GP", mui_u8g2_goto_data), /* Create field for the definition of
+                                          jump targets*/
+    MUIF_BUTTON(
+        "GC",
+        mui_u8g2_goto_form_w1_pf), /* Buttons for "frame around text cursor"*/
+    MUIF_RO("HR", mui_hrule),      /* horizontal line (hrule) */
+    MUIF_U8G2_FONT_STYLE(0, u8g2_font_helvR08_tr), /* define style 0 */
+    MUIF_U8G2_LABEL(),                             /* allow MUI_LABEL command */
+    MUIF_LABEL(mui_u8g2_draw_text),
+    MUIF_BUTTON("JM", mui_u8g2_btn_goto_wm_fi), /* jump to main */
+
+    /*Form(2) - Exit*/
+    // MUIF_VARIABLE("LV", &exit_code, mui_u8g2_btn_exit_wm_fi), /* Leave the
+    // menu system */
+    MUIF_BUTTON("LV", mui_u8g2_btn_exit_wm_fi), /* Leave the menu system */
+
+    /*Form(10) - Remote*/
+    MUIF_VARIABLE("RB", &remoteNotLocal, mui_u8g2_u8_radio_wm_pi), /**/
+
+    /*Form(15) - Calibrate*/
+    MUIF_U8G2_U8_MIN_MAX("NT", &selectedTank, 0, NUMBER_OF_TANK_SENSORS - 1,
+                         mui_u8g2_u8_min_max_wm_mud_pi),
+    MUIF_VARIABLE("PR", &selectedPair, mui_u8g2_u8_opt_line_wa_mud_pi),
+    MUIF_RO(
+        "T1",
+        mui_draw_calParams), /* custom MUIF callback to draw the timer value */
+    MUIF_U8G2_U8_MIN_MAX("N1", &newOhms, 0, 255, mui_u8g2_u8_min_max_wm_mud_pi),
+    MUIF_U8G2_U8_MIN_MAX("N2", &newOhmsdec, 0, 9,
+                         mui_u8g2_u8_min_max_wm_mud_pi),
+
+    /* Form(20) - Test LED*/
+    MUIF_VARIABLE("Ct", &testLedState,
+                  mui_u8g2_u8_chkbox_wm_pi), /* define testLed checkbox */
+
+    /* Form(30) - WiFi*/
+    MUIF_RO("T2", mui_draw_wifiParams),
+
+    /* Form(32) - delete config files*/
+    MUIF_VARIABLE("R1", &selectFile2Delete, mui_u8g2_u8_radio_wm_pi), /**/
+
+    /* Form(48) - sleep config*/
+    MUIF_U8G2_U8_MIN_MAX("NS", &displaySleepDelay, 1, 255,
+                         mui_u8g2_u8_min_max_wm_mud_pi), /**/
+
+    /* Form(50) - tank config*/
+
+    // MUIF_U8G2_U16_LIST("N0", &selectedTank, NULL, get_tankName_str,
+    // NUMBER_OF_TANK_SENSORS, mui_u8g2_u16_list_line_wa_mse_pi),
+
+    MUIF_RO("N0", mui_draw_tankConfigParams),
+    // MUIF_VARIABLE("N0", &tankParam[selectedTank].tankName,
+    //              mui_u8g2_draw_text), /*  */
+    MUIF_VARIABLE(
+        "C0", &sensorEnable, mui_u8g2_u8_chkbox_wm_pi), /* COMMON USE WITH TTANK AND TEMP CONFIG */
+    MUIF_VARIABLE("C1", &sensorN2kEnable, mui_u8g2_u8_chkbox_wm_pi), /* COMMON USE WITH TTANK AND TEMP CONFIG */
+    MUIF_VARIABLE("C2", &displayQty[TANK_QTY_PCNT], mui_u8g2_u8_chkbox_wm_pi),
+    MUIF_VARIABLE("C3", &displayQty[TANK_QTY_LTRS], mui_u8g2_u8_chkbox_wm_pi),
+    MUIF_VARIABLE("C4", &displayQty[TANK_QTY_STEP], mui_u8g2_u8_chkbox_wm_pi),
+    MUIF_VARIABLE("C5", &displayQty[TANK_QTY_OHMS], mui_u8g2_u8_chkbox_wm_pi),
+    MUIF_VARIABLE("C6", &displayQty[TANK_QTY_VOLT], mui_u8g2_u8_chkbox_wm_pi),
+
+    /* Form(51) - temp config*/
+    MUIF_U8G2_U8_MIN_MAX("NP", &selectedTemp, 0, NUMBER_OF_TEMP_SENSORS - 1,
+                         mui_u8g2_u8_min_max_wm_mud_pi),
+    MUIF_RO("M0", mui_draw_tempConfigParams),
+    MUIF_VARIABLE("C2", &displayQty[0], mui_u8g2_u8_chkbox_wm_pi),
+
+    /* Form(52) - tach config*/
+    MUIF_U8G2_U8_MIN_MAX("NH", &selectedTemp, 0, NUMBER_OF_TACH_SENSORS - 1,
+                         mui_u8g2_u8_min_max_wm_mud_pi),
+    MUIF_RO("M1", mui_draw_tachConfigParams),
+    MUIF_VARIABLE("C8", &displayQty[TACH_QTY_RPM],
+                  mui_u8g2_u8_chkbox_wm_pi),  //?????
+    MUIF_VARIABLE("C9", &displayQty[TACH_QTY_MS],
+                  mui_u8g2_u8_chkbox_wm_pi),  //?????
+
+    /* Form(30) - WiFi*/
+    MUIF_RO("T3", mui_draw_about),
+
+};
+
+void initializeMenu(void) {
+  mui.begin(u8g2, fds_data, muif_list, sizeof(muif_list) / sizeof(muif_t));
+  // force begin to fail so menu is inActice:
+  mui.gotoForm(/* form_id= */ 0, /* initial_cursor_position= */ 0);
+}
+
+void moveLiveDisplay(int direction, int *displayTypeIndex, int *sensorIndex,
+                     int *displayIndex) {
+  // addresses are being passed - values are being processed
+  int checkBit;
+  int displayTypeSensorCount[NUMBER_OF_DISPLAY_TYPES],
+      displayCount[NUMBER_OF_DISPLAY_TYPES];
+  displayTypeSensorCount[TANK_ALL_TYPE] = 1;
+  displayTypeSensorCount[TEMP_ALL_TYPE] = 1;
+  displayTypeSensorCount[TANK_INDV_TYPE] = NUMBER_OF_TANK_SENSORS;
+  displayTypeSensorCount[TEMP_INDV_TYPE] = NUMBER_OF_TEMP_SENSORS;
+  displayTypeSensorCount[TACH_INDV_TYPE] = NUMBER_OF_TACH_SENSORS;
+  displayCount[TANK_ALL_TYPE] = 1;
+  displayCount[TEMP_ALL_TYPE] = 1;
+  displayCount[TANK_INDV_TYPE] = NUMBER_OF_TANK_DISPLAYS;
+  displayCount[TEMP_INDV_TYPE] = NUMBER_OF_TEMP_DISPLAYS;
+  displayCount[TACH_INDV_TYPE] = NUMBER_OF_TACH_DISPLAYS;
+
+  DEBUG_PRINTF(
+      "MOVE ARGS: direction: %d displayTypeIndex: %d sensorIndex: %d "
+      "displayIndex: %d \n",
+      direction, *displayTypeIndex, *sensorIndex, *displayIndex);
+
+  checkBit = 0;
+  switch (direction) {
+    case FORWARD:
+      DEBUG_PRINTF("+++ FORWARD +++\n");
+      while (checkBit == 0) {
+        (*displayIndex)++;
+        // DEBUG_PRINTF(">>>>> CHECK:is displayIndex: %d ever < displayCount?
+        // displayTypeIndex: %d displayCount[(*displayTypeIndex)]:
+        // %d\n",(*displayTypeIndex),(*displayTypeIndex),displayCount[(*displayTypeIndex)]);
+        if ((*displayIndex) >= displayCount[(*displayTypeIndex)]) {
+          (*displayIndex) = 0;
+          (*sensorIndex)++;
+          if ((*sensorIndex) >= displayTypeSensorCount[*displayTypeIndex]) {
+            (*sensorIndex) = 0;
+            (*displayTypeIndex)++;
+            if ((*displayTypeIndex) >= NUMBER_OF_DISPLAY_TYPES) {
+              (*displayTypeIndex) = 0;
+            }
+          }
+        }
+        if ((*displayTypeIndex) == TEMP_INDV_TYPE)
+          checkBit = isNthBitSet(tempParam[*sensorIndex].displayEnabled,
+                                 *displayIndex);
+        else if ((*displayTypeIndex) == TANK_INDV_TYPE)
+          checkBit = isNthBitSet(tankParam[*sensorIndex].displayEnabled,
+                                 *displayIndex);
+        else if ((*displayTypeIndex) == TACH_INDV_TYPE)
+          checkBit = isNthBitSet(tachParam[*sensorIndex].displayEnabled,
+                                 *displayIndex);
+        else
+          checkBit =
+              1;  // TANK_ALL, TEMP_ALL, and TACH  -- currently are always
+                  // displayed .. need to fix this
+                  //  need way to conytroll yjese common display visibilities
+      };
+      break;
+    case BACKWARD:  // backward
+      DEBUG_PRINTF("+++ BACKWARD +++\n");
+      while (checkBit == 0) {
+        (*displayIndex)--;          // next lower sensor
+        if ((*displayIndex) < 0) {  // leaving lowest display
+          (*sensorIndex)--;         // next lower sensor
+          (*displayIndex) = displayCount[(*displayTypeIndex)] -
+                            1;       // highest disp of same type
+          if ((*sensorIndex) < 0) {  // leaving lowest sensor
+            (*displayTypeIndex)--;   // next lower type
+            (*sensorIndex) = displayTypeSensorCount[*displayTypeIndex] -
+                             1;  // highest sensor of next lower type
+            (*displayIndex) = displayCount[(*displayTypeIndex)] -
+                              1;  // highest display of next lower type
+            if ((*displayTypeIndex) < 0) {  // leaving lowest type
+              (*displayTypeIndex) =
+                  NUMBER_OF_DISPLAY_TYPES - 1;  // highest type
+              (*sensorIndex) = displayTypeSensorCount[*displayTypeIndex] -
+                               1;  // highest sensor of highest type
+              (*displayIndex) = displayCount[(*displayTypeIndex)] -
+                                1;  // highest display of highest type
+            }
+          }
+        }
+        if ((*displayTypeIndex) == TEMP_INDV_TYPE)
+          checkBit = isNthBitSet(tempParam[*sensorIndex].displayEnabled,
+                                 *displayIndex);
+        else if ((*displayTypeIndex) == TANK_INDV_TYPE)
+          checkBit = isNthBitSet(tankParam[*sensorIndex].displayEnabled,
+                                 *displayIndex);
+        else if ((*displayTypeIndex) == TACH_INDV_TYPE)
+          checkBit = isNthBitSet(tachParam[*sensorIndex].displayEnabled,
+                                 *displayIndex);
+        else
+          checkBit = 1;
+      };
+      break;
+
+    case REFRESH:
+      DEBUG_PRINTF("+++ REFRESH - DEFAULT  +++\n");
+      // do nothing?? but clear semaphore??
+  }
+
+  DEBUG_PRINTF("[type=%d,sensor=%d,display=%d,flag=%d]\n", *displayTypeIndex,
+               *sensorIndex, *displayIndex, checkBit);
+  semaphore_encoder = false;
+}
+
+void handle_events(void) {
+  // this routine is call every 10,000 microseconds (10 ms)
+
+  //------------- DISPLAY SLEEP ROUTINE BEGINS
+  if (displayIsAsleep)  // display sleep state 3 & 4 <<< ASLEEP >>>
+  {
+    // if (!digitalRead(PB_NEXT_RED) || !digitalRead(PB_PREV_BLUE) ||
+    // !digitalRead(PB_SEL_BLACK) || !digitalRead(PB_ENCODER) || push_event ||
+    // rotary_event)
+    if (turnedRightFlag || turnedLeftFlag ||
+        push_event) {  // display sleep state 4 Asleep & Should-be-Awake  ==>
+                       // waking up
+      displayIsAsleep = false;  // change to stable state Awake (#1)  SHOULD BE
+                                // FALSE -- TEST ONLY!!
+      is_redraw = true;         // restart screen refresh
+      displaySleepTimer = 0;    // reset countup
+      lastMsTime = millis();    // reset countup
+      turnedRightFlag = false;  // dump wake event
+      turnedLeftFlag = false;   // dump wake event
+      push_event = false;
+      return;
+    }
+    return;
+  } else  //(!displayIsAsleep) display sleep state 1 & 2 <<< Awake >>>
+  {
+    thisMsTime = millis();  // countup to sleep
+    displaySleepTimer =
+        displaySleepTimer + (thisMsTime - lastMsTime);  // countup to sleep
+    lastMsTime = thisMsTime;                            // countup to sleep
+
+    if (displaySleepTimer >
+        displaySleepDelay *
+            60000)  // display sleep state 2: Awake & Should-be-Asleep
+                    // ==> going to sleep
+    {
+      displayIsAsleep = true;   // change to stable state Asleep (#3)  SHOULD BE
+                                // TRUE -- TEST ONLY!!
+      u8g2.clearBuffer();       // clear screen
+      u8g2.sendBuffer();        // clear screen
+      push_event = false;       // dump pending event ???
+      turnedLeftFlag = false;   // dump pending event ???
+      turnedRightFlag = false;  // dump pending event ???
+      push_event = false;
+      is_redraw = 0;  // block refresh
+      return;
+    }
+
+    //------------- DISPLAY SLEEP ROUTINE ENDS
+    // if (!digitalRead(PB_NEXT_RED) || !digitalRead(PB_PREV_BLUE) ||
+    // !digitalRead(PB_SEL_BLACK) || !digitalRead(PB_ENCODER) || push_event ||
+    // rotary_event)
+    if (turnedLeftFlag || turnedRightFlag ||
+        push_event) {         // if event occurs while awake reset countup
+      displaySleepTimer = 0;  // reset countup if Awake and events occured
+      lastMsTime = millis();  // reset countup if Awake and events occured
+      // Serial.println("@@ AWAKE RESETTING");
+      //  0 = not pushed, 1 = pushed
+      if (push_event) {
+        // Serial.println("@@ PUSH");
+        // semaphore_encoder = true;  //dont think we need this?
+        if (mui.isFormActive()) {
+          uint8_t eventCode = u8g2.getMenuEvent();
+          uint8_t formId = mui.getCurrentFormId();
+          uint8_t focus = mui.getCurrentCursorFocusPosition();
+          //   DEBUG_PRINTF("handle event -  push event\n");
+          //   if (eventCode) {
+          DEBUG_PRINTF("push event -  eventCode: %u\n", eventCode);
+          DEBUG_PRINTF("push event -  formId: %u\n", formId);
+          DEBUG_PRINTF("push event -  focus posn: %u\n\n", focus);
+          if (formId == 1 && focus == 3) WiFiScrollerIndex = 0;
+          if (formId == 1 && focus == 4) loadTankConfig();
+          if (formId == 1 && focus == 5) loadTempConfig();
+          // if (formId == 2 && focus == 0) exitMenu();  //exit menu
+          if (formId == 10 && focus == 2) switchDisplay();
+          if (formId == 15 && focus == 5) updateCalibration();
+          if ((formId == 15 && focus == 1) || (formId == 15 && focus == 4))
+            refreshcurVoltReading();
+          if (formId == 32 && focus == 3) deleteConfigFile();
+          if (formId == 48 && focus == 1) writeConfigFile();
+          if (formId == 50 && focus == 8) loadTankConfig();  // reset
+          if (formId == 50 && focus == 9) saveTankConfig();  // set
+          if (formId == 51 && focus == 4) loadTempConfig();  // reset
+          if (formId == 51 && focus == 5) saveTempConfig();  // set
+          if (formId == 52 && focus == 5) loadTachConfig();  // reset
+          if (formId == 52 && focus == 6) saveTachConfig();  // set
+          //   }
+          mui.sendSelect();
+          is_redraw = 1;
+        }  // menu is active
+        else {
+          // this push requests menu startup
+          mui.begin(u8g2, fds_data, muif_list,
+                    sizeof(muif_list) / sizeof(muif_t));
+          mui.gotoForm(/* form_id= */ 1, /* initial_cursor_position= */ 0);
+          is_redraw = 1;
+        }
+        push_event = false;
+        moveLiveDisplay(REFRESH, &currentLiveDisplayType,
+                        &currentLiveDisplaySensor, &currentLiveDisplayQty);
+
+        return;
+      }  // push_event
+
+      // 0 = not turning, 1 = CW, 2 = CCW
+      if (turnedRightFlag) {
+        DEBUG_PRINTF("@@ CW\n");
+        semaphore_encoder = true;
+        if (mui.isFormActive()) {
+          WiFiScrollerIndex++;
+          if (WiFiScrollerIndex > WIFI_SCROLLER_INDEX_MAX)
+            WiFiScrollerIndex = WIFI_SCROLLER_INDEX_MAX;
+          mui.nextField();
+          is_redraw = 1;
+        }  // menu ios active
+        else  // must be live Display so select next liveDisplay as current
+        {
+          // Serial.println("@@ CW INCR");
+          moveLiveDisplay(FORWARD, &currentLiveDisplayType,
+                          &currentLiveDisplaySensor, &currentLiveDisplayQty);
+
+        }  // live fisplay
+      }  // rotary_event ==1
+
+      if (turnedLeftFlag) {
+        DEBUG_PRINTF("@@ CCW\n");
+        semaphore_encoder = true;
+        if (mui.isFormActive()) {
+          WiFiScrollerIndex--;
+          if (WiFiScrollerIndex < 0) WiFiScrollerIndex = 0;
+          // mui.nextField();
+          mui.prevField();
+          is_redraw = 1;
+        }  // menu active
+        else  // must be live Display so select prev liveDisplay as current
+        {
+          //    Serial.println("@@ CCW DECR");
+          moveLiveDisplay(BACKWARD, &currentLiveDisplayType,
+                          &currentLiveDisplaySensor, &currentLiveDisplayQty);
+
+        }  // live display
+      }  // rotarty_event ==2
+      turnedLeftFlag = false;
+      turnedRightFlag = false;
+      push_event = false;
+    }  // push_event || rotary_event
+       // test to see if can include here instead of loop()
+    if (mui.isFormActive()) {
+      // digitalWrite(TEST_LED_PIN, testLedState);
+
+      if (is_redraw) {
+        u8g2.clearBuffer();
+        mui.draw();
+        u8g2.sendBuffer();
+        is_redraw = 0;
+      }
+    }
+
+  }  // else not asleep
+}
