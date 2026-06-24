@@ -316,9 +316,9 @@ uint8_t mui_draw_tachConfigParams(mui_t *ui, uint8_t msg) {
 uint8_t mui_draw_about(mui_t *ui, uint8_t msg) {
   char about_str[ABOUT_LIST_COUNT][30+1];
   char filename[30+1];
- 
 
-  sprintf(about_str[0], "ver:%s", PROGRAM_VERSION);  //defined in jwStructsAndGlobals.h
+
+  sprintf(about_str[0], "ver:%s", APP_VERSION);  //defined in jwStructsAndGlobals.h
   //sprintf(about_str[0], "file:%s", main_filename);
   sprintf(about_str[1], "Date:%s", __DATE__);
   sprintf(about_str[2], "Time:%s", __TIME__);
